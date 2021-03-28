@@ -13,6 +13,7 @@ from ksrates.utils import merge_dicts, concat_files, can_i_run_software, transla
 
 _OUTPUT_BLAST_FILE_PATTERN = '{}.blast.tsv'
 _OUTPUT_MCL_FILE_PATTERN = '{}.mcl.tsv'
+_OUTPUT_DIAMOND_PATTERN = '{}.diamond_rbh_tmp'
 _OUTPUT_KS_FILE_PATTERN = '{}.ks.tsv'
 _PARALOGS_OUTPUT_DIR_PATTERN = 'wgd_{}'
 _ORTHOLOGS_OUTPUT_DIR_PATTERN = 'wgd_{}_{}'
@@ -902,3 +903,477 @@ def _write_anchor_pairs_ks(anchor_points_file, ks_file, out_file='ks_anchors.tsv
         if out_file:
             with open(out_file, "w+") as of:
                 of.write(ks_anchors_weighted.to_csv(sep='\t'))
+
+
+# -----------------------------------------------------------------------------
+
+def ks_paralogs_dmd(species_name, cds_fasta, base_dir='.', eval_cutoff=1e-10, inflation_factor=2.0, aligner='muscle',
+                    min_msa_length=100, codeml='codeml', codeml_times=1, pairwise=False,
+                    max_gene_family_size=200, weighting_method='fasttree', n_threads=4, overwrite=False):
+    """
+    Modified from wgd_cli.py
+
+    All vs. all Blast and one-to-one ortholog delineation (reciprocal best hits)
+    :param species_name: name or ID of the species, used in output file names
+    :param cds_fasta: CDS fasta file
+    :param base_dir: directory where the output directory will be created in
+    :param eval_cutoff: e-value cut off for blastp analysis
+    :param inflation_factor: inflation factor for MCL clustering
+    :param aligner: aligner to use
+    :param min_msa_length: minimum multiple sequence alignment length
+    :param codeml: path to codeml executable for ML estimation of Ks
+    :param codeml_times: number of times to iteratively perform codeml ML estimation of Ks
+    :param pairwise: run in pairwise mode
+    :param max_gene_family_size: maximum size of a gene family to be included in analysis
+    :param weighting_method: weighting method (fasttree, phyml or alc)
+    :param n_threads: number of threads to use
+    :param overwrite: overwrite existing results
+    :return: nothing
+    """
+
+    # input checks
+    if not species_name:
+        logging.error('No species name provided. Exiting.')
+        sys.exit(1)
+
+    output_mcl_file = _OUTPUT_MCL_FILE_PATTERN.format(species_name)
+    output_ks_file = _OUTPUT_KS_FILE_PATTERN.format(species_name)
+
+    output_dir = os.path.abspath(os.path.join(base_dir, _PARALOGS_OUTPUT_DIR_PATTERN.format(species_name)))
+
+    # determine which parts to run
+    do_diamond_mcl = True
+    do_ks = True
+    if os.path.exists(output_dir):
+        if os.path.exists(os.path.join(output_dir, output_mcl_file)):
+            if overwrite:
+                logging.warning(f'Paralog gene families file {output_mcl_file} exists, will overwrite')
+            else:
+                logging.info(f'Paralog gene family data {output_mcl_file} already exists, '
+                             f'will skip wgd DIAMOND and mcl')
+                do_diamond_mcl = False
+        else:
+            logging.info('No paralog gene family data, will run wgd DIAMOND and mcl')
+        if os.path.exists(os.path.join(output_dir, output_ks_file)):
+            if overwrite or do_diamond_mcl:
+                logging.warning(f'Paralog Ks file {output_ks_file} exists, will overwrite')
+            else:
+                logging.info(f'Paralog Ks data {output_ks_file} already exists, will skip wgd Ks analysis')
+                do_ks = False
+        else:
+            logging.info('No paralog Ks data, will run wgd Ks analysis')
+
+    if not do_diamond_mcl and not do_ks:
+        logging.info('All paralog data already exist, nothing to do')
+        logging.info('Done')
+        return
+
+    # software checks
+    logging.info('---')
+    logging.info('Checking external software...')
+    software = []
+    if do_diamond_mcl:
+        software += ['diamond']
+        software += ['mcl']
+    if do_ks:
+        software += [aligner, codeml]
+        if weighting_method == 'fasttree':
+            software += ['FastTree']
+        elif weighting_method == 'phyml':
+            software += ['phyml']
+    if can_i_run_software(software) == 1:
+        logging.error('Could not run all required external software. Exiting.')
+        sys.exit(1)
+
+    # input checks
+    if not cds_fasta:
+        logging.error('No CDS fasta file provided. Exiting.')
+        sys.exit(1)
+
+    if not os.path.exists(output_dir):
+        logging.info(f'Creating output directory {output_dir}')
+        os.makedirs(output_dir)
+
+    # DIAMOND and MCL
+    if do_diamond_mcl:
+        logging.info('---')
+        logging.info(f'Running DIAMOND and gene family construction (MCL clustering with inflation factor = '
+                     f'{inflation_factor})')
+
+        # tmp directory
+        tmp_dir = os.path.join(output_dir, f'{species_name}.diamond_mcl_tmp')
+        if not os.path.exists(tmp_dir):
+            os.mkdir(tmp_dir)
+
+        s = [SequenceData(cds_fasta, out_path=output_dir, tmp_path=tmp_dir, to_stop=False, cds=False,
+                          n_threads=max(n_threads/2, min(n_threads, 4)))]
+        s[0].get_paranome(inflation=inflation_factor, eval=eval_cutoff)
+        s[0].write_paranome(output_mcl_file)
+
+        # remove temporary files
+        logging.info('Removing tmp directory')
+        shutil.rmtree(tmp_dir)
+
+    # whole paranome Ks analysis
+    if do_ks:
+        logging.info('---')
+        logging.info('Running whole paranome Ks analysis...')
+
+        # read and translate CDS file
+        logging.info(f'Translating CDS file {cds_fasta}...')
+        cds_sequences = read_fasta(os.path.abspath(cds_fasta))
+        protein_sequences = translate_cds(cds_sequences)
+
+        # tmp directory
+        cw_dir = os.getcwd()
+        tmp_dir = os.path.join(output_dir, f'{species_name}.ks_tmp')
+        if not os.path.exists(tmp_dir):
+            os.mkdir(tmp_dir)
+        os.chdir(tmp_dir)  # change directory to the tmp dir, as codeml writes non-unique file names to the working dir
+
+        output_mcl_path = os.path.join(output_dir, output_mcl_file)
+        max_pairwise = max_gene_family_size * (max_gene_family_size - 1) / 2
+        results_df = ks_analysis_paranome(cds_sequences, protein_sequences, output_mcl_path, tmp_dir, output_dir,
+                                          codeml, times=codeml_times, aligner=aligner, ignore_prefixes=False,
+                                          min_length=min_msa_length, pairwise=pairwise, max_pairwise=max_pairwise,
+                                          method=weighting_method, preserve=False, n_threads=n_threads)
+        with open(os.path.join(output_dir, output_ks_file), 'w+') as o:
+            o.write(results_df.round(5).to_csv(sep='\t'))
+        os.chdir(cw_dir)  # change back to current directory as tmp dir got deleted and subsequent os.getcwd() may fail
+
+    logging.info('---')
+    logging.info('Done')
+
+
+def ks_orthologs_dmd(species1, species2, cds_fasta1, cds_fasta2, base_dir='.', eval_cutoff=1e-10, aligner='muscle',
+                     codeml='codeml', codeml_times=1, n_threads=4, overwrite=False):
+    """
+    Modified from wgd_cli.py
+
+    All vs. all Blast and one-to-one ortholog delineation (reciprocal best hits)
+    :param species1: name or ID of the first species, used in output file names
+    :param species2: name or ID of the second species, used in output file names
+    :param cds_fasta1: CDS fasta file of the first species
+    :param cds_fasta2: CDS fasta file of the second species
+    :param base_dir: directory where the output directory will be created in
+    :param eval_cutoff: e-value cut off for blastp analysis
+    :param aligner: aligner to use
+    :param codeml: path to codeml executable for ML estimation of Ks
+    :param codeml_times: number of times to iteratively perform codeml ML estimation of Ks
+    :param n_threads: number of threads to use
+    :param overwrite: overwrite existing results
+    :return: nothing
+    """
+
+    # input checks
+    if not species1 and not species2:
+        logging.error('No ortholog species names provided. Exiting.')
+        sys.exit(1)
+
+    output_orthologs_file = f'{species1}_{species2}.orthologs.tsv'
+    output_ks_file = f'{species1}_{species2}.ks.tsv'
+
+    output_dir = os.path.abspath(os.path.join(base_dir, _ORTHOLOGS_OUTPUT_DIR_PATTERN.format(species1, species2)))
+
+    # determine which parts to run
+    do_diamond_rbh = True
+    do_ks = True
+    if os.path.exists(output_dir):
+        if os.path.exists(os.path.join(output_dir, output_orthologs_file)):
+            if overwrite:
+                logging.warning(f'Ortholog pairs file {output_orthologs_file} exists, will overwrite')
+            else:
+                logging.info(f'Ortholog pairs data {output_orthologs_file} already exists, '
+                             f'will skip wgd DIAMOND and one-to-one ortholog detection')
+                do_diamond_rbh = False
+        else:
+            logging.info('No ortholog pairs data, will run wgd DIAMOND and one-to-one ortholog detection')
+        if os.path.exists(os.path.join(output_dir, output_ks_file)):
+            if overwrite or do_diamond_rbh:
+                logging.warning(f'Ortholog Ks file {output_ks_file} exists, will overwrite')
+            else:
+                logging.info(f'Ortholog Ks data {output_ks_file} already exists, will skip wgd Ks analysis')
+                do_ks = False
+        else:
+            logging.info('No ortholog Ks data, will run wgd Ks analysis')
+
+    if not do_diamond_rbh and not do_ks:
+        logging.info('All ortholog data already exist, nothing to do')
+        logging.info('Done')
+        return
+
+    # software checks
+    logging.info('---')
+    logging.info('Checking external software...')
+    software = []
+    if do_diamond_rbh:
+        software += ['diamond']
+    if do_ks:
+        software += [aligner, codeml]
+    if can_i_run_software(software) == 1:
+        logging.error('Could not run all required external software. Exiting.')
+        sys.exit(1)
+
+    # input checks
+    if not cds_fasta1 and not cds_fasta2:
+        logging.error('No CDS fasta files provided for ortholog species. Exiting.')
+        sys.exit(1)
+
+    if not os.path.exists(output_dir):
+        logging.info(f'Creating output directory {output_dir}')
+        os.makedirs(output_dir)
+
+    # DIAMOND and one-to-one orthologs (RBHs)
+    if do_diamond_rbh:
+        logging.info('---')
+        logging.info('Running DIAMOND and one-to-one ortholog detection (reciprocal best blast hits)')
+
+        # tmp directory
+        tmp_dir = os.path.join(output_dir, _OUTPUT_DIAMOND_PATTERN.format(species1, species2))
+        if not os.path.exists(tmp_dir):
+            os.mkdir(tmp_dir)
+
+        s = [SequenceData(s, out_path=output_dir, tmp_path=tmp_dir, to_stop=False, cds=False,
+                          n_threads=max(n_threads/2, min(n_threads, 4)))
+             for s in [cds_fasta1, cds_fasta2]]
+
+        logging.info("{} vs. {}".format(s[0].cds_fasta_basename, s[1].cds_fasta_basename))
+        s[0].get_rbh_orthologs(s[1], eval=eval_cutoff)
+        s[0].write_rbh_orthologs(output_orthologs_file, s[1])
+
+        # remove temporary files
+        logging.info('Removing tmp directory')
+        shutil.rmtree(tmp_dir)
+
+    # one-to-one ortholog Ks analysis
+    if do_ks:
+        logging.info('---')
+        logging.info('Running one-to-one ortholog Ks analysis...')
+
+        # read and translate CDS files
+        logging.info(f'Translating CDS file {cds_fasta1}...')
+        cds_sequences1 = read_fasta(os.path.abspath(cds_fasta1))
+        protein_sequences1 = translate_cds(cds_sequences1)
+        logging.info(f'Translating CDS file {cds_fasta2}...')
+        cds_sequences2 = read_fasta(os.path.abspath(cds_fasta2))
+        protein_sequences2 = translate_cds(cds_sequences2)
+
+        # tmp directory
+        cw_dir = os.getcwd()
+        tmp_dir = os.path.join(output_dir, _TMP_KS.format(f"{species1}_{species2}"))
+        if not os.path.exists(tmp_dir):
+            os.mkdir(tmp_dir)
+        os.chdir(tmp_dir)  # change directory to the tmp dir, as codeml writes non-unique file names to the working dir
+
+        cds_sequences = merge_dicts(cds_sequences1, cds_sequences2)
+        protein_sequences = merge_dicts(protein_sequences1, protein_sequences2)
+        output_orthologs_path = os.path.join(output_dir, output_orthologs_file)
+        results_df = ks_analysis_one_vs_one(cds_sequences, protein_sequences, output_orthologs_path, tmp_dir,
+                                            output_dir, codeml, times=codeml_times, aligner=aligner, preserve=False,
+                                            n_threads=n_threads)
+        with open(os.path.join(output_dir, output_ks_file), 'w+') as o:
+            o.write(results_df.round(5).to_csv(sep='\t'))
+        os.chdir(cw_dir)  # change back to current directory as tmp dir got deleted and subsequent os.getcwd() may fail
+
+    logging.info('---')
+    logging.info('Done')
+
+
+# #############################################
+# Below copied and modified from wgd/diamond.py
+# #############################################
+
+# helper functions
+def _write_fasta(fname, seq_dict):
+    with open(fname, "w") as f:
+        for k, v in seq_dict.items():
+            f.write(">{}\n{}\n".format(k, v.seq))
+    return fname
+
+
+def _mkdir(dirname):
+    if os.path.isdir(dirname):
+        logging.debug("dir {} exists!".format(dirname))
+    else:
+        os.mkdir(dirname)
+    return dirname
+
+
+# keep in dict with keys safe ids, with as values the full record, allowing at
+# all time full recovery of gene names etc.?
+class SequenceData:
+    """
+    Sequence data container for Ks distribution computation pipeline. A helper
+    class that bundles sequence manipulation methods.
+    """
+    def __init__(self, cds_fasta, tmp_path=None, out_path="wgd_dmd", to_stop=False, cds=False, n_threads=4):
+        self.cds_fasta = cds_fasta
+        if tmp_path is None:
+            tmp_path = str(uuid.uuid4())
+        self.tmp_path  = _mkdir(tmp_path)
+        self.out_path  = _mkdir(out_path)
+        self.n_threads = n_threads
+        self.cds_fasta_basename = os.path.basename(self.cds_fasta)
+        self.protein_fasta = os.path.join(tmp_path, self.cds_fasta_basename + ".tfa")
+        self.protein_db = os.path.join(tmp_path, self.cds_fasta_basename + ".db")
+        self.cds_seqs = {}
+        self.protein_seqs = {}
+        self.dmd_hits = {}
+        self.rbh = {}
+        self.mcl = {}
+        self.read_cds(to_stop=to_stop, cds=cds)
+        _write_fasta(self.protein_fasta, self.protein_seqs)
+
+
+    def read_cds(self, to_stop=False, cds=False):
+        for i, seq in enumerate(SeqIO.parse(self.cds_fasta, 'fasta')):
+            gid = "{0}_{1:0>5}".format(self.cds_fasta_basename, i)
+            try:
+                aa_seq = seq.translate(to_stop=to_stop, cds=cds, id=seq.id)
+            except TranslationError as e:
+                logging.warning(f"Translation error ({e}) in seq {seq.id}")
+                # continue
+            self.cds_seqs[gid] = seq
+            self.protein_seqs[gid] = aa_seq
+        return
+
+
+    def make_diamond_db(self):
+        logging.info("Running diamond makedb")
+        command = ["diamond", "makedb", "--threads", str(self.n_threads), "--in", self.protein_fasta,
+                   "-d", self.protein_db]
+        logging.info(' '.join(command))
+        try:
+            sp = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', check=True)
+            out = sp.stdout.strip()
+            err = sp.stderr.strip()
+            if out:
+                logging.info("diamond makedb output:\n" + out)
+            if err:
+                logging.error("diamond makedb standard error output:\n" + err)
+        except subprocess.CalledProcessError as e:
+            logging.error(f"diamond makedb execution failed with return code: {e.returncode}")
+            if e.stderr:
+                logging.error("diamond makedb standard error output:\n" + e.stderr.strip())
+            logging.error("Exiting.")
+            sys.exit(e.returncode)
+
+    def run_diamond(self, seqs, eval=1e-10):
+        self.make_diamond_db()
+        run = "_".join([self.cds_fasta_basename, seqs.cds_fasta_basename + ".tsv"])
+        outfile = os.path.join(self.tmp_path, run)
+        logging.info("Running diamond blastp")
+        command = ["diamond", "blastp", "--threads", str(self.n_threads), "-d", self.protein_db,
+                   "-q", seqs.protein_fasta, "-o", outfile]
+        logging.info(' '.join(command))
+        try:
+            sp = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', check=True)
+            out = sp.stdout.strip()
+            err = sp.stderr.strip()
+            if out:
+                logging.info("diamond blastp output:\n" + out)
+            if err:
+                logging.error("diamond blastp standard error output:\n" + err)
+        except subprocess.CalledProcessError as e:
+            logging.error(f"diamond blastp execution failed with return code: {e.returncode}")
+            if e.stderr:
+                logging.error("diamond blastp standard error output:\n" + e.stderr.strip())
+            logging.error("Exiting.")
+            sys.exit(e.returncode)
+
+        df = pd.read_csv(outfile, sep="\t", header=None)
+        df = df.loc[df[0] != df[1]]
+        self.dmd_hits[seqs.cds_fasta_basename] = df = df.loc[df[10] <= eval]
+        return df
+
+
+    def get_rbh_orthologs(self, seqs, eval=1e-10):
+        if self == seqs:
+            raise ValueError("RBH orthologs only defined for distinct species")
+        df = self.run_diamond(seqs, eval=eval)
+        df1 = df.sort_values(10).drop_duplicates([0])
+        df2 = df.sort_values(10).drop_duplicates([1])
+        self.rbh[seqs.cds_fasta_basename] = df1.merge(df2)
+        # self.rbh[seqs.prefix] = seqs.rbh[self.prefix] = df1.merge(df2)
+        # write to file using original ids for next steps
+
+    def write_rbh_orthologs(self, file_name, seqs):
+        cds_fasta_basename = seqs.cds_fasta_basename
+        fname = os.path.join(self.out_path, file_name)
+        df = self.rbh[cds_fasta_basename]
+        df["x"] = df[0].apply(lambda x: seqs.cds_seqs[x].id)
+        df["y"] = df[1].apply(lambda x: self.cds_seqs[x].id)
+        df.to_csv(fname, columns=["y", "x"], header=None, index=False, sep="\t")
+        # header=[prefix, self.prefix]
+
+
+    def get_paranome(self, inflation=1.5, eval=1e-10):
+        df = self.run_diamond(self, eval=eval)
+        gf = self.get_mcl_graph(self.cds_fasta_basename)
+        mcl_out = gf.run_mcl(inflation=inflation)
+        with open(mcl_out, "r") as f:
+            for i, line in enumerate(f.readlines()):
+                self.mcl[i] = line.strip().split()
+
+    def get_mcl_graph(self, *args):
+        # args are keys in `self.dmd_hits` to use for building MCL graph
+        gf = os.path.join(self.tmp_path, "_".join([self.cds_fasta_basename] + list(args)))
+        df = pd.concat([self.dmd_hits[x] for x in args])
+        df.to_csv(gf, sep="\t", header=False, index=False, columns=[0,1,10])
+        return SequenceSimilarityGraph(gf)
+
+    def write_paranome(self, file_name):
+        fname = os.path.join(self.out_path, file_name)
+        with open(fname, "w") as f:
+            for k, v in sorted(self.mcl.items()):
+                f.write("\t".join([self.cds_seqs[x].id for x in v]))
+                f.write("\n")
+        return fname
+
+
+class SequenceSimilarityGraph:
+    def __init__(self, graph_file):
+        self.graph_file = graph_file
+
+    def run_mcl(self, inflation=1.5):
+        g1 = self.graph_file
+        g2 = g1 + ".tab"
+        g3 = g1 + ".mci"
+        g4 = g2 + ".I{}".format(inflation*10)
+        outfile = g1 + ".mcl"
+        logging.info("Running MCL")
+        command = ['mcxload', '-abc', g1, '--stream-mirror', '--stream-neg-log10', '-o', g3, '-write-tab', g2]
+        logging.info(" ".join(command))
+        try:
+            sp = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', check=True)
+            out = sp.stdout.strip()
+            err = sp.stderr.strip()
+            if out:
+                logging.info("mcxload output:\n" + out)
+            if err:
+                logging.error("mcxload standard error output:\n" + err)
+            command = ['mcl', g3, '-I', str(inflation), '-o', g4]
+            logging.info(" ".join(command))
+            sp = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', check=True)
+            out = sp.stdout.strip()
+            err = sp.stderr.strip()
+            if out:
+                logging.info("mcl output:\n" + out)
+            if err:
+                logging.error("mcl standard error output:\n" + err)
+            command = ['mcxdump', '-icl', g4, '-tabr', g2, '-o', outfile]
+            logging.info(" ".join(command))
+            sp = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', check=True)
+            out = sp.stdout.strip()
+            err = sp.stderr.strip()
+            if out:
+                logging.info("mcxdump output:\n" + out)
+            if err:
+                logging.error("mcxdump standard error output:\n" + err)
+        except subprocess.CalledProcessError as e:
+            logging.error(f"mcl pipeline execution failed with return code: {e.returncode}")
+            if e.stderr:
+                logging.error("mcl pipeline standard error output:\n" + e.stderr.strip())
+            logging.error("Exiting.")
+            sys.exit(e.returncode)
+        return outfile

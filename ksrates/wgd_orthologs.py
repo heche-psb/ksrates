@@ -40,8 +40,11 @@ def wgd_orthologs(config_file, species_one, species_two, n_threads):
 
     # ESTIMATING ORTHOLOG Ks VALUES
     logging.info("Running wgd ortholog Ks pipeline...")
-    fc_wgd.ks_orthologs(species1, species2, species1_fasta_file, species2_fasta_file, base_dir=ortholog_dists_dir,
-                        n_threads=n_threads)
+    # fc_wgd.ks_orthologs(species1, species2, species1_fasta_file, species2_fasta_file, base_dir=ortholog_dists_dir,
+    #                    n_threads=n_threads)
+
+    fc_wgd.ks_orthologs_dmd(species1, species2, species1_fasta_file, species2_fasta_file, base_dir=ortholog_dists_dir,
+                            n_threads=n_threads)
 
     logging.info(datetime.datetime.today().ctime())
     logging.info("Done")

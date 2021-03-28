@@ -64,7 +64,9 @@ def wgd_paralogs(config_file, n_threads):
 
     # ESTIMATING PARANOME Ks VALUES
     logging.info("Running wgd paralog Ks pipeline...")
-    fc_wgd.ks_paralogs(species, species_fasta_file, max_gene_family_size=max_gene_family_size, base_dir=paralog_dists_dir, n_threads=n_threads)
+    # fc_wgd.ks_paralogs(species, species_fasta_file, max_gene_family_size=max_gene_family_size, base_dir=paralog_dists_dir, n_threads=n_threads)
+
+    fc_wgd.ks_paralogs_dmd(species, species_fasta_file, max_gene_family_size=max_gene_family_size, base_dir=paralog_dists_dir, n_threads=n_threads)
 
     # EXTRACTING COLINEARITY/SYNTENY ANCHOR PAIRS Ks VALUES
     if colinearity:
