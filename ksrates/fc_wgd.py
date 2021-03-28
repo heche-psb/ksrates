@@ -10,10 +10,13 @@ from wgd.blast_mcl import run_mcl_ava, ava_blast_to_abc, get_one_v_one_orthologs
 from wgd.ks_distribution import ks_analysis_paranome, ks_analysis_one_vs_one
 from wgd.colinearity import gff_parser
 from ksrates.utils import merge_dicts, concat_files, can_i_run_software, translate_cds, write_fasta
+from Bio import SeqIO
+from Bio.Data.CodonTable import TranslationError
 
 _OUTPUT_BLAST_FILE_PATTERN = '{}.blast.tsv'
 _OUTPUT_MCL_FILE_PATTERN = '{}.mcl.tsv'
-_OUTPUT_DIAMOND_PATTERN = '{}.diamond_rbh_tmp'
+_OUTPUT_DIAMOND_PARALOG_PATTERN ='{}.diamond_mcl_tmp'
+_OUTPUT_DIAMOND_ORTHOLOG_PATTERN = '{}.diamond_rbh_tmp'
 _OUTPUT_KS_FILE_PATTERN = '{}.ks.tsv'
 _PARALOGS_OUTPUT_DIR_PATTERN = 'wgd_{}'
 _ORTHOLOGS_OUTPUT_DIR_PATTERN = 'wgd_{}_{}'
@@ -940,6 +943,8 @@ def ks_paralogs_dmd(species_name, cds_fasta, base_dir='.', eval_cutoff=1e-10, in
     output_ks_file = _OUTPUT_KS_FILE_PATTERN.format(species_name)
 
     output_dir = os.path.abspath(os.path.join(base_dir, _PARALOGS_OUTPUT_DIR_PATTERN.format(species_name)))
+    tmp_dmd_paralogs = os.path.join(output_dir, _OUTPUT_DIAMOND_PARALOG_PATTERN.format(species_name))
+    tmp_ks_paralogs = os.path.join(output_dir, _TMP_KS.format(species_name))
 
     # determine which parts to run
     do_diamond_mcl = True
@@ -1000,19 +1005,18 @@ def ks_paralogs_dmd(species_name, cds_fasta, base_dir='.', eval_cutoff=1e-10, in
         logging.info(f'Running DIAMOND and gene family construction (MCL clustering with inflation factor = '
                      f'{inflation_factor})')
 
-        # tmp directory
-        tmp_dir = os.path.join(output_dir, f'{species_name}.diamond_mcl_tmp')
-        if not os.path.exists(tmp_dir):
-            os.mkdir(tmp_dir)
+        # tmp directory      
+        if not os.path.exists(tmp_dmd_paralogs):
+            os.mkdir(tmp_dmd_paralogs)
 
-        s = [SequenceData(cds_fasta, out_path=output_dir, tmp_path=tmp_dir, to_stop=False, cds=False,
+        s = [SequenceData(cds_fasta, out_path=output_dir, tmp_path=tmp_dmd_paralogs, to_stop=False, cds=False,
                           n_threads=max(n_threads/2, min(n_threads, 4)))]
         s[0].get_paranome(inflation=inflation_factor, eval=eval_cutoff)
         s[0].write_paranome(output_mcl_file)
 
         # remove temporary files
         logging.info('Removing tmp directory')
-        shutil.rmtree(tmp_dir)
+        shutil.rmtree(tmp_dmd_paralogs)
 
     # whole paranome Ks analysis
     if do_ks:
@@ -1026,20 +1030,26 @@ def ks_paralogs_dmd(species_name, cds_fasta, base_dir='.', eval_cutoff=1e-10, in
 
         # tmp directory
         cw_dir = os.getcwd()
-        tmp_dir = os.path.join(output_dir, f'{species_name}.ks_tmp')
-        if not os.path.exists(tmp_dir):
-            os.mkdir(tmp_dir)
-        os.chdir(tmp_dir)  # change directory to the tmp dir, as codeml writes non-unique file names to the working dir
+        if not os.path.exists(tmp_ks_paralogs):
+            os.mkdir(tmp_ks_paralogs)
+        os.chdir(tmp_ks_paralogs)  # change directory to the tmp dir, as codeml writes non-unique file names to the working dir
 
         output_mcl_path = os.path.join(output_dir, output_mcl_file)
-        max_pairwise = max_gene_family_size * (max_gene_family_size - 1) / 2
-        results_df = ks_analysis_paranome(cds_sequences, protein_sequences, output_mcl_path, tmp_dir, output_dir,
+        results_df = ks_analysis_paranome(cds_sequences, protein_sequences, output_mcl_path, tmp_ks_paralogs, output_dir,
                                           codeml, times=codeml_times, aligner=aligner, ignore_prefixes=False,
-                                          min_length=min_msa_length, pairwise=pairwise, max_pairwise=max_pairwise,
+                                          min_length=min_msa_length, pairwise=pairwise, max_gene_family_size=max_gene_family_size,
                                           method=weighting_method, preserve=False, n_threads=n_threads)
+        if os.path.exists(tmp_ks_paralogs):
+            logging.error(f'tmp directory {tmp_ks_paralogs} still exists after analysis, '
+                          f'paralog Ks data may be incomplete and will not be written to paralog Ks file!')
+            logging.error('Please delete the tmp directory and rerun the analysis. Exiting.')
+            sys.exit(1)
+        if isinstance(results_df, type(None)) or results_df.empty:
+            logging.warning('No paralog Ks data computed, will write empty paralog Ks file!')
         with open(os.path.join(output_dir, output_ks_file), 'w+') as o:
             o.write(results_df.round(5).to_csv(sep='\t'))
-        os.chdir(cw_dir)  # change back to current directory as tmp dir got deleted and subsequent os.getcwd() may fail
+        os.chdir(cw_dir)
+        # change back to current directory as tmp dir got deleted and subsequent os.getcwd() may fail
 
     logging.info('---')
     logging.info('Done')
@@ -1129,7 +1139,7 @@ def ks_orthologs_dmd(species1, species2, cds_fasta1, cds_fasta2, base_dir='.', e
         logging.info('Running DIAMOND and one-to-one ortholog detection (reciprocal best blast hits)')
 
         # tmp directory
-        tmp_dir = os.path.join(output_dir, _OUTPUT_DIAMOND_PATTERN.format(species1, species2))
+        tmp_dir = os.path.join(output_dir, _OUTPUT_DIAMOND_ORTHOLOG_PATTERN.format(species1, species2))
         if not os.path.exists(tmp_dir):
             os.mkdir(tmp_dir)
 
