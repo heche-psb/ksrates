@@ -143,7 +143,7 @@ def ava_blast_to_abc(ava_file, col_1=0, col_2=1, col_3=10):
     return graph
 
 
-def run_mcl_ava(graph, output_dir='./', inflation=2, output_file='out.mcl',
+def run_mcl_ava(graph, output_dir='./', inflation=3, output_file='out.mcl',
                 preserve=False, return_dict=False):
     """
     Run ``mcl`` on all-vs-all Blast results for a species of interest.
