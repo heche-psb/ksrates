@@ -167,7 +167,7 @@ def write_config_adhore(
         cluster_gap=35, q_value=0.75, prob_cutoff=0.01, anchor_points=3,
         alignment_method='gg2', level_2_only='false', table_type='family',
         multiple_hypothesis_correction='FDR', visualize_ghm='false',
-        visualize_alignment='true'):
+        visualize_alignment='false'):
     """
     Write out the config file for I-ADHoRe. See I-ADHoRe manual for information
     on parameter settings.
