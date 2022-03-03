@@ -20,8 +20,8 @@ _ORTHOLOGS_OUTPUT_DIR_PATTERN = 'wgd_{}_{}'
 _TMP_BLAST = '{}.blast_tmp'
 _TMP_KS = '{}.ks_tmp'
 
-def ks_paralogs(species_name, cds_fasta, base_dir='.', eval_cutoff=1e-10, inflation_factor=2.0, aligner='muscle',
-                min_msa_length=100, codeml='codeml', codeml_times=1, pairwise=False,
+def ks_paralogs(species_name, cds_fasta, base_dir='.', eval_cutoff=1e-10, inflation_factor=3.0, aligner='muscle',
+                min_msa_length=100, codeml='codeml', codeml_times=1, pairwise=True,
                 max_gene_family_size=200, weighting_method='fasttree', n_threads=4, overwrite=False):
     """
     Modified from wgd_cli.py
@@ -718,7 +718,7 @@ def _write_config_iadhore(gene_lists_dir, families_file, base_dir='.', genome='g
                           output_path='i-adhore_out', gap_size=30, tandem_gap=None, cluster_gap=35,
                           max_gaps_in_alignment=None, q_value=0.75, prob_cutoff=0.01, anchor_points=3,
                           alignment_method='gg2', level_2_only='false', table_type='family',
-                          multiple_hypothesis_correction='FDR', visualize_ghm='false', visualize_alignment='true',
+                          multiple_hypothesis_correction='FDR', visualize_ghm='false', visualize_alignment='false',
                           number_of_threads=1):
     """
     Modified from wgd/colinearity.py
