@@ -105,7 +105,7 @@ def bootstrap_KDE(ks_list, n_replicates, max_ks, bin_width):
     They are plotted to have an idea of the bootstrap iterations.
 
     :param ks_list: list of ortholog Ks values for bootstrap
-    :param n_replicates: number of iterations for boostrap (default: 20) 
+    :param n_replicates: number of iterations for boostrap (default: 20),HC changed it into 200 
     :param max_ks: maximum x value allowed for ortholog Ks distribution plots
     :param bin_width: width of histogram bins in ortholog Ks plots (default value in config file: 0.1;
         there are 10 bins per tick in the x axis)
