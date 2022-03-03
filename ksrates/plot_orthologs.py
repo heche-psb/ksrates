@@ -115,8 +115,8 @@ def plot_orthologs_distr(config_file, trios_file):
 
             # SPECIES - SISTER
             ks_list_species_sister = literal_eval(ks_list_db.at[species_sister, 'Ks_Values'])
-            # Getting 20 KDE curves through bootstrap
-            bootstrap_kde_species_sister = fcPeak.bootstrap_KDE(ks_list_species_sister, 20, x_lim, bin_width_ortho)
+            # Getting 20 KDE curves through bootstrap,HC changed it into 200
+            bootstrap_kde_species_sister = fcPeak.bootstrap_KDE(ks_list_species_sister, 200, x_lim, bin_width_ortho)
 
             for out in unavailable_trios:
                 latinOut = latin_names[out]
@@ -139,17 +139,17 @@ def plot_orthologs_distr(config_file, trios_file):
 
                 # SPECIES - OUTGROUP
                 ks_list = literal_eval(ks_list_db.at[species_out, 'Ks_Values'])
-                # Getting 20 KDE curves through bootstrap
+                # Getting 20 KDE curves through bootstrap,HC changed it into 200
                 logging.info(f"  Plotting data for focal species and outspecies [{latinSpecies} - {latinOut}]")
-                bootstrap_kde = fcPeak.bootstrap_KDE(ks_list, 20, x_lim, bin_width_ortho)
+                bootstrap_kde = fcPeak.bootstrap_KDE(ks_list, 200, x_lim, bin_width_ortho)
                 # Plotting Ks lists and their KDE lines
                 fcPlot.plot_orthologs_histogram_kdes(ks_list, bin_list_ortho, axes[1], bootstrap_kde)
 
                 # SISTER - OUTGROUP
                 ks_list = literal_eval(ks_list_db.at[sister_out, 'Ks_Values'])
-                # Getting 20 KDE curves through bootstrap
+                # Getting 20 KDE curves through bootstrap,HC changed it into 200
                 logging.info(f"  Plotting data for sister species and outspecies [{latinSister} - {latinOut}]")
-                bootstrap_kde = fcPeak.bootstrap_KDE(ks_list, 20, x_lim, bin_width_ortho)
+                bootstrap_kde = fcPeak.bootstrap_KDE(ks_list, 200, x_lim, bin_width_ortho)
                 # Plotting Ks lists and their KDE lines
                 fcPlot.plot_orthologs_histogram_kdes(ks_list, bin_list_ortho, axes[2], bootstrap_kde)
 
